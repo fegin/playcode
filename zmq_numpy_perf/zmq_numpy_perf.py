@@ -73,10 +73,11 @@ class ZmqTestModule(object):
 
     def __init__(self, context, ztype, niter, array_shape):
         self.context = context
+        self.ztype = ztype
         
-        zmq_addr = {ZMQ_TYPE_INPROC: 'inproc://TestModule.inproc',
-                    ZMQ_TYPE_IPC: 'ipc://TestModule.ipc',
-                    ZMQ_TYPE_TCP: 'tcp://*:5555'}
+        zmq_addr = {self.ZMQ_TYPE_INPROC: 'inproc://TestModule.inproc',
+                    self.ZMQ_TYPE_IPC: 'ipc://TestModule.ipc',
+                    self.ZMQ_TYPE_TCP: 'tcp://127.0.0.1:5555'}
 
         self.srv_socket = context.socket(zmq.REP)
         self.cli_socket = context.socket(zmq.REQ)
@@ -97,7 +98,8 @@ class ZmqTestModule(object):
 
     def server(self, niter):
         for i in range(niter):
-            msg = recv_array(self, self.srv_socket, copy=False)
+            #msg = self.recv_array(self.srv_socket, copy=False)
+            msg = self.srv_socket.recv()
             self.srv_socket.send(b"World")
 
         self.srv_socket.close()
@@ -108,13 +110,20 @@ class ZmqTestModule(object):
 
         begin = time.time()
         for i in range(niter):
-            send_array(self, self.cli_socket, array, copy=False)
+            #self.send_array(self.cli_socket, array, copy=False)
+            self.cli_socket.send(b'Hello')
             msg = self.cli_socket.recv()
         elapse = time.time() - begin
 
-        print('Iteration per second :', niter / elapse, '\n',
+        if self.ztype == self.ZMQ_TYPE_INPROC:
+            print('\nZMQ_TYPE_INPROC', '-' * 32, sep='\n')
+        elif self.ztype == self.ZMQ_TYPE_IPC:
+            print('\nZMQ_TYPE_IPC', '-' * 32, sep='\n')
+        elif self.ztype == self.ZMQ_TYPE_TCP:
+            print('\nZMQ_TYPE_TCP', '-' * 32, sep='\n')
+        print('Iteration per second :', niter / elapse,
               'Throughput (MBps) :', (niter * array.nbytes / elapse 
-                                      / 1024 / 1024))
+                                      / 1024 / 1024), sep='\n')
 
         self.cli_socket.close()
 
@@ -138,14 +147,23 @@ def main():
 
     context = zmq.Context.instance()
 
-    array_shape = (1024, 1024)
+    array_shape = (1, 1)
 
-    gil_test = GilTestModule(GilTestModule.BUSYLOOP_PYTHON, 2048*2048, 4, array_shape)
-    gil_test.run()
-    gil_test.join()
-    gil_test = GilTestModule(GilTestModule.BUSYLOOP_NUMPY, 5, 4, array_shape)
-    gil_test.run()
-    gil_test.join()
+    #gil_test1 = GilTestModule(GilTestModule.BUSYLOOP_PYTHON, 4096*4096, 1, array_shape)
+    #gil_test1.run()
+    #gil_test2 = GilTestModule(GilTestModule.BUSYLOOP_NUMPY, 1000, 1, array_shape)
+    #gil_test2.run()
+    zmq_test1 = ZmqTestModule(context, ZmqTestModule.ZMQ_TYPE_INPROC, 100000, array_shape)
+    zmq_test1.run()
+    zmq_test1.join()
+    zmq_test2 = ZmqTestModule(context, ZmqTestModule.ZMQ_TYPE_IPC, 100000, array_shape)
+    zmq_test2.run()
+    zmq_test2.join()
+    zmq_test3 = ZmqTestModule(context, ZmqTestModule.ZMQ_TYPE_TCP, 100000, array_shape)
+    zmq_test3.run()
+    zmq_test3.join()
+    #gil_test1.join()
+    #gil_test2.join()
 
 if __name__ == '__main__':
     main()
