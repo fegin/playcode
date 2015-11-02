@@ -1,10 +1,12 @@
 from __future__ import print_function
 import argparse
 import threading
+import multiprocessing
 import time 
 
 import numpy as np
 import zmq
+import cPickle
 
 
 class GilTestModule(object):
@@ -66,80 +68,217 @@ class GilTestModule(object):
             c = np.dot(a, b)
 
 
-class ZmqTestModule(object):
-    ZMQ_TYPE_INPROC = 1
-    ZMQ_TYPE_IPC = 2
-    ZMQ_TYPE_TCP = 3
+def send_header_json(socket, flags=0):
+    md = dict(dtype=str('int64'), shape=(1000 * 1000, 1000 * 1000))
+    return socket.send_json(md, flags)
 
-    def __init__(self, context, ztype, niter, array_shape):
-        self.context = context
-        self.ztype = ztype
-        
-        zmq_addr = {self.ZMQ_TYPE_INPROC: 'inproc://TestModule.inproc',
-                    self.ZMQ_TYPE_IPC: 'ipc://TestModule.ipc',
-                    self.ZMQ_TYPE_TCP: 'tcp://127.0.0.1:5555'}
 
-        self.srv_socket = context.socket(zmq.REP)
-        self.cli_socket = context.socket(zmq.REQ)
-        self.srv_socket.bind(zmq_addr[ztype])
-        self.cli_socket.connect(zmq_addr[ztype])
-        self.srv_thread = threading.Thread(target=self.server, 
-                                           args=(niter,))
-        self.cli_thread = threading.Thread(target=self.client, 
-                                           args=(niter, array_shape,))
+def recv_header_json(socket, flags=0):
+    return socket.recv_json(flags)
 
-    def run(self):
-        self.srv_thread.start()
-        self.cli_thread.start()
 
-    def join(self):
-        self.srv_thread.join()
-        self.cli_thread.join()
+def send_header_cpickle(socket, flags=0, copy=True):
+    md = dict(dtype=str('int64'), shape=(1000 * 1000, 1000 * 1000))
+    md = cPickle.dumps(md)
+    return socket.send(md, flags , copy=copy)
 
-    def server(self, niter):
-        for i in range(niter):
-            #msg = self.recv_array(self.srv_socket, copy=False)
-            msg = self.srv_socket.recv()
-            self.srv_socket.send(b"World")
 
-        self.srv_socket.close()
+def recv_header_cpickle(socket, flags=0, copy=True):
+    md = socket.recv(flags, copy=copy)
+    md  = cPickle.loads(str(md))
+    return md
 
-    def client(self, niter, array_shape):
-        array = np.arange(reduce(lambda x, y: x * y, array_shape)
-                         ).reshape(array_shape)
 
+def send_array_json(socket, A, flags=0, copy=True):
+    md = dict(dtype=str(A.dtype), shape=A.shape)
+    socket.send_json(md, flags | zmq.SNDMORE)
+    return socket.send(A, flags, copy=copy)
+
+
+def recv_array_json(socket, flags=0, copy=True):
+    md = socket.recv_json(flags)
+    msg = socket.recv(flags=flags, copy=copy)
+    buf = buffer(msg)
+    A = np.frombuffer(buf, dtype=md['dtype'])
+    return A.reshape(md['shape'])
+
+
+def send_array_cpickle(socket, A, flags=0, copy=True):
+    md = dict(dtype=str(A.dtype), shape=A.shape)
+    md = cPickle.dumps(md)
+    socket.send(md, flags | zmq.SNDMORE, copy=True)
+    return socket.send(A, flags, copy=copy)
+
+
+def recv_array_cpickle(socket, flags=0, copy=True):
+    md = socket.recv(flags, copy=True)
+    md  = cPickle.loads(str(md))
+    msg = socket.recv(flags=flags, copy=copy)
+    buf = buffer(msg)
+    A = np.frombuffer(buf, dtype=md['dtype'])
+    return A.reshape(md['shape'])
+
+
+def test_srv_wrapper(func):
+    def f(niter, size, addr, copy, sock=None):
+        if not sock:
+            sock = zmq.Context().socket(zmq.REP)
+            sock.bind(addr)
+        func(niter, size, addr, copy, sock)
+        time.sleep(1.5)
+        sock.close()
+    return f
+
+
+def test_cli_wrapper(func):
+    def f(niter, size, addr, copy, sock=None):
+        if not sock:
+            sock = zmq.Context().socket(zmq.REQ)
+            sock.connect(addr)
+        print('Start Client')
         begin = time.time()
-        for i in range(niter):
-            #self.send_array(self.cli_socket, array, copy=False)
-            self.cli_socket.send(b'Hello')
-            msg = self.cli_socket.recv()
+        func(niter, size, addr, copy, sock)
         elapse = time.time() - begin
+        print('Address', ':', addr)
+        print('Size', ':', size)
+        print('Copy', ':', copy)
+        print('niter', ':', niter)
+        print('Latency', ':', str(elapse / niter * 1e6), 'us')
+        print('Iterations per second', ':', niter / elapse)
+        print('Throughput per second(Mbps)', ':', 
+              size * 2 * niter * 8.0 / elapse / 1024 / 1024)
+        print('Elapse', ':', elapse)
+        sock.close()
+    return f
 
-        if self.ztype == self.ZMQ_TYPE_INPROC:
-            print('\nZMQ_TYPE_INPROC', '-' * 32, sep='\n')
-        elif self.ztype == self.ZMQ_TYPE_IPC:
-            print('\nZMQ_TYPE_IPC', '-' * 32, sep='\n')
-        elif self.ztype == self.ZMQ_TYPE_TCP:
-            print('\nZMQ_TYPE_TCP', '-' * 32, sep='\n')
-        print('Iteration per second :', niter / elapse,
-              'Throughput (MBps) :', (niter * array.nbytes / elapse 
-                                      / 1024 / 1024), sep='\n')
 
-        self.cli_socket.close()
+def test_wrapper(func):
+    def f(*args, **kwargs):
+        print('')
+        print(func.__name__)
+        print('-' * 32)
+        func(*args, **kwargs)
+    return f
 
-    def send_array(self, socket, A, flags=0, copy=True, track=False):
-        """send a numpy array with metadata"""
-        md = dict(dtype=str(A.dtype), shape=A.shape)
-        socket.send_json(md, flags | zmq.SNDMORE)
-        return socket.send(A, flags, copy=copy, track=track)
 
-    def recv_array(self, socket, flags=0, copy=True, track=False):
-        """recv a numpy array"""
-        md = socket.recv_json(flags=flags)
-        msg = socket.recv(flags=flags, copy=copy, track=track)
-        buf = buffer(msg)
-        A = np.frombuffer(buf, dtype=md['dtype'])
-        return A.reshape(md['shape'])
+@test_wrapper
+def test_header_json(niter, size, addr, copy):
+    @test_srv_wrapper
+    def test_srv(niter, size, addr, copy, sock=None):
+        for i in xrange(niter):
+            msg = recv_header_json(sock)
+            send_header_json(sock)
+            
+    @test_cli_wrapper
+    def test_cli(niter, size, addr, copy, sock=None):
+        for i in xrange(niter):
+            send_header_json(sock)
+            msg = recv_header_json(sock)
+
+    srv = multiprocessing.Process(target=test_srv, args=(niter, size, addr, copy))
+    cli = multiprocessing.Process(target=test_cli, args=(niter, size, addr, copy))
+    srv.start()
+    cli.start()
+    srv.join()
+    cli.join()
+
+
+@test_wrapper
+def test_header_cpickle(niter, size, addr, copy):
+    @test_srv_wrapper
+    def test_srv(niter, size, addr, copy, sock=None):
+        for i in xrange(niter):
+            msg = recv_header_cpickle(sock, copy=copy)
+            send_header_cpickle(sock, copy=copy)
+            
+    @test_cli_wrapper
+    def test_cli(niter, size, addr, copy, sock=None):
+        msg = np.arange(size / 4, dtype=np.int32).reshape((size / 4, 1))
+        for i in xrange(niter):
+            send_header_cpickle(sock, copy=copy) 
+            msg = recv_header_cpickle(sock, copy=copy)
+
+    srv = multiprocessing.Process(target=test_srv, args=(niter, size, addr, copy))
+    cli = multiprocessing.Process(target=test_cli, args=(niter, size, addr, copy))
+    srv.start()
+    cli.start()
+    srv.join()
+    cli.join()
+
+
+@test_wrapper
+def test_array_json(niter, size, addr, copy):
+    @test_srv_wrapper
+    def test_srv(niter, size, addr, copy, sock=None):
+        for i in xrange(niter):
+            msg = recv_array_json(sock, copy=copy)
+            send_array_json(sock, msg, copy=copy)
+            
+    @test_cli_wrapper
+    def test_cli(niter, size, addr, copy, sock=None):
+        msg = np.arange(size / 4, dtype=np.int32).reshape((size / 4, 1))
+        for i in xrange(niter):
+            send_array_json(sock, msg, copy=copy) 
+            msg = recv_array_json(sock, copy=copy)
+
+    srv = multiprocessing.Process(target=test_srv, args=(niter, size, addr, copy))
+    cli = multiprocessing.Process(target=test_cli, args=(niter, size, addr, copy))
+    srv.start()
+    cli.start()
+    srv.join()
+    cli.join()
+
+
+@test_wrapper
+def test_array_cpickle(niter, size, addr, copy):
+    @test_srv_wrapper
+    def test_srv(niter, size, addr, copy, sock=None):
+        for i in xrange(niter):
+            msg = recv_array_cpickle(sock, copy=copy)
+            send_array_cpickle(sock, msg, copy=copy)
+            
+    @test_cli_wrapper
+    def test_cli(niter, size, addr, copy, sock=None):
+        msg = np.arange(size / 4, dtype=np.int32).reshape((size / 4, 1))
+        for i in xrange(niter):
+            if i == niter - 1:
+                print ('Almost Done')
+            send_array_cpickle(sock, msg, copy=copy) 
+            if i == niter - 1:
+                print ('Should be done')
+            msg = recv_array_cpickle(sock, copy=copy)
+            if i == niter - 1:
+                print ('Should be done')
+
+    srv = multiprocessing.Process(target=test_srv, args=(niter, size, addr, copy))
+    cli = multiprocessing.Process(target=test_cli, args=(niter, size, addr, copy))
+    srv.start()
+    cli.start()
+    srv.join()
+    cli.join()
+
+
+@test_wrapper
+def test_msg(niter, size, addr, copy):
+    @test_srv_wrapper
+    def test_srv(niter, size, addr, copy, sock=None):
+        for i in xrange(niter):
+            msg = sock.recv(copy=copy)
+            sock.send(msg, copy=copy)
+
+    @test_cli_wrapper            
+    def test_cli(niter, size, addr, copy, sock=None):
+        msg = b'0' * size
+        for i in xrange(niter):
+            sock.send(msg, copy=copy)
+            msg = sock.recv(copy=copy)
+
+    srv = multiprocessing.Process(target=test_srv, args=(niter, size, addr, copy))
+    cli = multiprocessing.Process(target=test_cli, args=(niter, size, addr, copy))
+    srv.start()
+    cli.start()
+    srv.join()
+    cli.join()
 
 
 def main():
@@ -147,23 +286,37 @@ def main():
 
     context = zmq.Context.instance()
 
-    array_shape = (1, 1)
+    niter = 2**17
+    for size in tuple(2 ** i for i in range(25)):
+        niter_ = niter
+        if size >= 2 ** 21:
+            niter_ /= size / (2 ** 20)
+        print (size, niter_)
+        test_msg(niter_, size, "ipc://localhost.ipc", True)
+        test_msg(niter_, size, "tcp://127.0.0.1:5555", True)
+        test_msg(niter_, size, "ipc://localhost.ipc", False)
+        test_msg(niter_, size, "tcp://127.0.0.1:5555", False)
 
-    #gil_test1 = GilTestModule(GilTestModule.BUSYLOOP_PYTHON, 4096*4096, 1, array_shape)
-    #gil_test1.run()
-    #gil_test2 = GilTestModule(GilTestModule.BUSYLOOP_NUMPY, 1000, 1, array_shape)
-    #gil_test2.run()
-    zmq_test1 = ZmqTestModule(context, ZmqTestModule.ZMQ_TYPE_INPROC, 100000, array_shape)
-    zmq_test1.run()
-    zmq_test1.join()
-    zmq_test2 = ZmqTestModule(context, ZmqTestModule.ZMQ_TYPE_IPC, 100000, array_shape)
-    zmq_test2.run()
-    zmq_test2.join()
-    zmq_test3 = ZmqTestModule(context, ZmqTestModule.ZMQ_TYPE_TCP, 100000, array_shape)
-    zmq_test3.run()
-    zmq_test3.join()
-    #gil_test1.join()
-    #gil_test2.join()
+    test_header_cpickle(niter, 1, "ipc://localhost.ipc", True)
+    test_header_cpickle(niter, 1, "tcp://127.0.0.1:5555", True)
+    test_header_cpickle(niter, 1, "ipc://localhost.ipc", False)
+    test_header_cpickle(niter, 1, "tcp://127.0.0.1:5555", False)
+    test_header_json(niter, 1, "ipc://localhost.ipc", True)
+    test_header_json(niter, 1, "tcp://127.0.0.1:5555", True)
+
+    for size in tuple(2 ** i for i in range(25)):
+        niter_ = niter
+        if size >= 2 ** 21:
+            niter_ /= size / (2 ** 20)
+        test_array_json(niter_, size, "ipc://localhost.ipc", True)
+        test_array_json(niter_, size, "tcp://127.0.0.1:5555", True)
+        test_array_json(niter_, size, "ipc://localhost.ipc", False)
+        test_array_json(niter_, size, "tcp://127.0.0.1:5555", False)
+        test_array_cpickle(niter_, size, "ipc://localhost.ipc", True)
+        test_array_cpickle(niter_, size, "tcp://127.0.0.1:5555", True)
+        test_array_cpickle(niter_, size, "ipc://localhost.ipc", False)
+        test_array_cpickle(niter_, size, "tcp://127.0.0.1:5555", False)
+
 
 if __name__ == '__main__':
     main()
