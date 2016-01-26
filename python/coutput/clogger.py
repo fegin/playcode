@@ -32,25 +32,25 @@ class ColorFormatter(logging.Formatter):
         return msg 
 
 
-def getLogger(name, format=None):
+def getCLogger(name, format=None):
     if not format:
         format = ('[%(levelname)-8s][%(name)-5s]  %(message)s -- ' +
                   '%(filename)s:%(lineno)d')
 
-    if name not in getLogger.table:
+    if name not in getCLogger.table:
         logger = logging.getLogger(name)
         formatter = ColorFormatter(format)
         console = logging.StreamHandler()
         console.setFormatter(formatter)
         logger.addHandler(console)
-        getLogger.table[name] = logger
+        getCLogger.table[name] = logger
 
-    return getLogger.table[name]
+    return getCLogger.table[name]
 
-getLogger.table = {}
+getCLogger.table = {}
 
 if __name__ == '__main__':
-    logger = getLogger(__name__)
+    logger = getCLogger(__name__)
     logger.debug('This is %s test', 'clogger')
     logger.info('This is %s test', 'clogger')
     logger.warning('This is %s test', 'clogger')
