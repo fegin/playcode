@@ -1,3 +1,4 @@
+import math
 import time
 
 import numpy as np
@@ -10,21 +11,29 @@ def main():
         a = np.arange(size)
         a = 1
     elapse = time.time() - begin
-    print('Test malloc performance')
-    print('size = %d' % size * 8)
+    print('\nTest malloc performance')
+    print('*' * 32)
+    print('size = %d' % (size * 8))
     print('niter = %d' % niter)
     print('elapse = %f' % elapse)
-    print('iteration / second = %f' % (elapse / niter))
+    print('iteration / second = %f' % (niter/elapse))
+    print('second / iteration = %f' % (elapse/niter))
 
-    a = np.arange(1024 * 1024 * 64).reshape(1024 * 8, 1024 * 8)
-    b = np.arange(1024 * 1024 * 64).reshape(1024 * 8, 1024 * 8)
+    size = 1024 * 1024 * 4
+    a = np.arange(size).reshape(int(math.sqrt(size)), int(math.sqrt(size)))
+    b = np.arange(size).reshape(int(math.sqrt(size)), int(math.sqrt(size)))
+    niter = 10
+    begin = time.time()
     for i in range(niter):
         c = np.dot(a, b)
-    print('Test computation performance on different memory type')
-    print('size = %d' % size * 8)
+    elapse = time.time() - begin
+    print('\nTest computation performance on different memory type')
+    print('*' * 32)
+    print('size = %d' % (size * 8))
     print('niter = %d' % niter)
     print('elapse = %f' % elapse)
-    print('iteration / second = %f' % (elapse / niter))
+    print('iteration / second = %f' % (niter/elapse))
+    print('second / iteration = %f' % (elapse/niter))
 
 
 if __name__ == '__main__':

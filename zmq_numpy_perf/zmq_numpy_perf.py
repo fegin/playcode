@@ -287,10 +287,10 @@ def main():
     context = zmq.Context.instance()
 
     niter = 2**17
-    for size in tuple(2 ** i for i in range(25)):
+    for size in tuple(2 ** i for i in range(27)):
         niter_ = niter
         if size >= 2 ** 21:
-            niter_ /= size / (2 ** 20)
+            niter_ /= size / (2 ** 19)
         print (size, niter_)
         test_msg(niter_, size, "ipc://localhost.ipc", True)
         test_msg(niter_, size, "tcp://127.0.0.1:5555", True)
@@ -304,10 +304,10 @@ def main():
     test_header_json(niter, 1, "ipc://localhost.ipc", True)
     test_header_json(niter, 1, "tcp://127.0.0.1:5555", True)
 
-    for size in tuple(2 ** i for i in range(25)):
+    for size in tuple(2 ** i for i in range(27)):
         niter_ = niter
         if size >= 2 ** 21:
-            niter_ /= size / (2 ** 20)
+            niter_ /= size / (2 ** 19)
         test_array_json(niter_, size, "ipc://localhost.ipc", True)
         test_array_json(niter_, size, "tcp://127.0.0.1:5555", True)
         test_array_json(niter_, size, "ipc://localhost.ipc", False)
